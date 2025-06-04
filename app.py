@@ -8,6 +8,7 @@ import math
 import threading
 import cv2
 import numpy as np
+from shapely.geometry import Point, Polygon
 from flask import send_from_directory
 from dronekit import connect, VehicleMode, LocationGlobalRelative, APIException
 from flask import Flask, render_template, jsonify, request, Response
@@ -36,6 +37,9 @@ app.config['SECRET_KEY'] = 'jetson_mango_drone_2024_secret_key!'
 socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins="*")
 
 # --- Global Variables ---
+geofence_polygon = None # Will store the Shapely Polygon object
+geofence_points_raw = [] # Store raw points for potential re-use/logging
+geofence_active = False
 vehicle = None
 telemetry_data = {}
 update_interval = 1.0 # Telemetry update interval in seconds
@@ -532,6 +536,57 @@ def command_start_recording():
         current_recording_filename = None
         return jsonify({"status": "error", "message": f"Failed to start recording: {str(e)}"}), 500
 
+
+
+@app.route('/command/set_geofence', methods=['POST'])
+def command_set_geofence():
+    global geofence_polygon, geofence_points_raw, geofence_active
+    try:
+        data = request.get_json()
+        points_data = data.get('points') # List of {lat: y, lng: x}
+        if not points_data or len(points_data) < 3:
+            return jsonify({"status": "error", "message": "Geofence requires at least 3 points"}), 400
+
+        # Convert to list of (lng, lat) tuples for Shapely
+        # Note: Shapely typically uses (x, y) which corresponds to (lng, lat)
+        shapely_points = [(p['lng'], p['lat']) for p in points_data]
+        
+        geofence_polygon = Polygon(shapely_points)
+        geofence_points_raw = points_data # Store for reference
+        geofence_active = False # Reset to inactive until user explicitly activates
+        
+        print(f"Geofence set with {len(shapely_points)} points. Area: {geofence_polygon.area:.6f} sq. degrees.")
+        socketio.emit('status_update', {'message': f"Geofence defined. Area: {geofence_polygon.area * 111 * 111:.2f} sq km (approx). Ready to activate."}) # Rough area
+        return jsonify({"status": "success", "message": "Geofence polygon updated. Activate to enforce."})
+    except Exception as e:
+        print(f"Error setting geofence: {e}")
+        return jsonify({"status": "error", "message": f"Failed to set geofence: {str(e)}"}), 500
+
+@app.route('/command/toggle_geofence', methods=['POST'])
+def command_toggle_geofence():
+    global geofence_active, geofence_polygon
+    try:
+        data = request.get_json()
+        activate = data.get('active', False)
+
+        if activate and not geofence_polygon:
+            return jsonify({"status": "error", "message": "No geofence defined. Cannot activate."}), 400
+
+        geofence_active = activate
+        status_msg = "Geofence ACTIVATED." if geofence_active else "Geofence DEACTIVATED."
+        print(status_msg)
+        socketio.emit('status_update', {'message': status_msg})
+        # Send telemetry update so UI components reflect the true state
+        current_telemetry = get_telemetry() # get_telemetry should now include geofence status
+        socketio.emit('telemetry_update', current_telemetry)
+        return jsonify({"status": "success", "message": status_msg})
+    except Exception as e:
+        print(f"Error toggling geofence: {e}")
+        return jsonify({"status": "error", "message": f"Failed to toggle geofence: {str(e)}"}), 500
+
+
+
+
 @app.route('/command/stop_recording', methods=['POST'])
 def command_stop_recording():
     global is_recording, video_writer, current_recording_filename
@@ -706,6 +761,10 @@ def get_telemetry():
             "mango_detected": mango_detected,
             "search_state": search_state,  # Add search state to telemetry
             "cpu_temperature": get_jetson_temperature(),
+            "memory_usage": round(psutil.virtual_memory().percent,1),
+            "geofence_active": geofence_active, # Add this
+            "geofence_defined": geofence_polygon is not None, # Add this
+            "cpu_temperature": get_jetson_temperature(),
             "memory_usage": round(psutil.virtual_memory().percent,1)
         }
         return telemetry
@@ -750,6 +809,7 @@ def mango_tracking_loop():
     global search_state, search_start_time, rotation_start_time, forward_movement_start_time
     global total_rotation_degrees, incremental_rotation_target, detection_wait_start_time
     global current_rotation_degrees
+    global geofence_active
 
     print("Enhanced mango tracking control loop started.")
     while running:
@@ -757,6 +817,15 @@ def mango_tracking_loop():
             search_state = "idle"
             eventlet.sleep(0.2) 
             continue
+
+        if geofence_active and geofence_polygon:
+            if not is_drone_inside_geofence():
+                handle_geofence_breach()
+                search_state = "idle" # Reset search state to re-evaluate after turning
+                current_rotation_degrees = 0
+                incremental_rotation_target = 0
+                eventlet.sleep(1.0) # Pause to allow reorientation
+                continue
 
         with cv_lock:
             current_mango_detected = mango_detected
@@ -897,6 +966,83 @@ def mango_tracking_loop():
         eventlet.sleep(0.1)
 
     print("Enhanced mango tracking control loop stopped.")
+
+def is_drone_inside_geofence():
+    global vehicle, geofence_polygon
+    if not vehicle or not vehicle.location.global_relative_frame or not geofence_polygon:
+        return True # If no geofence or no location, assume inside (fail-safe, or handle differently)
+    
+    drone_loc = vehicle.location.global_relative_frame
+    # Shapely uses (x, y) which corresponds to (lng, lat)
+    drone_point = Point(drone_loc.lon, drone_loc.lat)
+    return geofence_polygon.contains(drone_point)
+
+def handle_geofence_breach():
+    global vehicle
+    if not vehicle: return
+
+    print("Geofence breach detected or imminent! Stopping and turning.")
+    socketio.emit('status_update', {'message': "WARNING: Geofence boundary reached. Turning."})
+    
+    # Stop all movement
+    send_enhanced_movement_command(0, 0, 0, 0) 
+    eventlet.sleep(0.5) # Allow drone to stabilize
+
+    # Option 1: Turn 90 degrees relative to current heading (e.g., turn right)
+    # target_yaw_rad = (vehicle.attitude.yaw + math.pi/2) % (2 * math.pi) # Turn 90 deg right
+
+    # Option 2: Turn towards the center of the geofence (more robust if polygon is complex)
+    if geofence_polygon:
+        centroid = geofence_polygon.centroid # Shapely Point (lng, lat)
+        drone_lat = vehicle.location.global_relative_frame.lat
+        drone_lon = vehicle.location.global_relative_frame.lon
+        
+        # Calculate bearing to centroid
+        d_lon = math.radians(centroid.x - drone_lon)
+        lat1 = math.radians(drone_lat)
+        lat2 = math.radians(centroid.y)
+        
+        y = math.sin(d_lon) * math.cos(lat2)
+        x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(d_lon)
+        bearing_rad = math.atan2(y, x)
+        target_yaw_rad = (bearing_rad) % (2 * math.pi) # Normalize
+
+        # Command the yaw. This is tricky with set_position_target_local_ned.
+        # Using condition_yaw is better for explicit yaw control.
+        # For now, a simple rotation via yaw_rate for a short duration could work,
+        # or rely on the tracking loop to reorient if it gets a new "mango_position"
+        # (which it won't, because it's at the boundary).
+        # Let's try to command a turn using yaw_rate in send_enhanced_movement_command.
+        # We need to calculate the difference between current yaw and target_yaw_rad
+        current_yaw_rad = vehicle.attitude.yaw
+        yaw_diff_rad = target_yaw_rad - current_yaw_rad
+        # Normalize yaw_diff_rad to be between -pi and pi
+        if yaw_diff_rad > math.pi: yaw_diff_rad -= 2 * math.pi
+        if yaw_diff_rad < -math.pi: yaw_diff_rad += 2 * math.pi
+
+        # Turn for a fixed duration, e.g., 2 seconds to make a significant turn
+        # The YAW_SCALING_FACTOR might be too slow for a deliberate 90-degree turn.
+        # A fixed yaw rate might be better here.
+        turn_yaw_rate_rad_s = math.copysign(math.radians(30), yaw_diff_rad) # 30 deg/s in the direction of diff
+        
+        if abs(math.degrees(yaw_diff_rad)) > 10: # Only turn if yaw is off by more than 10 degrees
+            print(f"Turning towards geofence center. Current Yaw: {math.degrees(current_yaw_rad):.1f}, Target Yaw: {math.degrees(target_yaw_rad):.1f}, Rate: {math.degrees(turn_yaw_rate_rad_s):.1f} deg/s")
+            # Turn for a bit
+            start_turn_time = time.time()
+            while time.time() - start_turn_time < 2.0 and abs(math.degrees(target_yaw_rad - vehicle.attitude.yaw)) > 15 : # Turn for up to 2s or until close
+                if not running or not geofence_active: break # Exit if shutdown or geofence deactivated
+                send_enhanced_movement_command(0, 0, 0, turn_yaw_rate_rad_s) # Only yaw
+                eventlet.sleep(0.1)
+            send_enhanced_movement_command(0,0,0,0) # Stop yawing
+            print("Finished turn attempt.")
+        else:
+            print("Already facing towards geofence center, no turn needed.")
+
+    # After turning, the main loop's logic (search or tracking) will resume.
+    # Prevent immediate re-breach by perhaps disallowing movement towards boundary for a short time,
+    # or ensure the search/tracking logic correctly adapts after the turn.
+    # For now, the turn itself is the primary action.
+
 
 def generate_frames():
     """Generate frames for video feed."""
