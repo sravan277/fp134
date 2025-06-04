@@ -1,0 +1,1390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Mango Drone Control</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono&display=swap'); /* For monospace elements */
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body { 
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            padding-top: 70px; /* Space for top-status-bar */
+            padding-bottom: 130px; /* Space for bottom weather card */
+            color: #ffffff;
+        }
+
+        /* --- Top Weather Warning Banner --- */
+        #topWeatherWarningBanner {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            background-color: #ffae42; 
+            color: #444;
+            padding: 8px 15px;
+            border-bottom: 1px solid rgba(0,0,0,0.1);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 1005; /* Above other fixed elements */
+            display: none; /* Hidden by default */
+            text-align: center;
+            font-size: 0.9em;
+            font-weight: 600;
+        }
+        #topWeatherWarningText {
+             /* Styling within the banner handled by parent or can be added if needed */
+        }
+        /* --- End Top Weather Warning Banner --- */
+
+
+        /* --- Bottom Weather Card Styles (Modified from .weather-card) --- */
+        .weather-card-bottom { /* Renamed and restyled for bottom placement */
+            position: fixed;
+            bottom: 10px; /* Small gap from edge */
+            left: 50%;
+            transform: translateX(-50%);
+            background: linear-gradient(135deg, #89f7fe 0%, #66a6ff 100%); 
+            color: #fff;
+            padding: 12px 18px;
+            border-radius: 18px;
+            box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15); /* Shadow upwards */
+            display: none; /* Hidden until data loads */
+            flex-direction: column; /* Main layout is still column for .weather-top-row and potential future elements */
+            gap: 5px; 
+            z-index: 1000; 
+            font-family: 'Inter', sans-serif;
+            width: auto; /* Auto width based on content */
+            min-width: 320px; /* Minimum sensible width */
+            max-width: 680px; /* Max width for the horizontal layout */
+            opacity: 0.97;
+            transition: opacity 0.3s ease, max-width 0.3s ease;
+        }
+
+        .weather-top-row { 
+            display: flex;
+            flex-direction: row;
+            align-items: flex-start; 
+            gap: 15px; 
+            width: 100%;
+        }
+
+        .weather-main-info { 
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0; 
+            min-width: 200px; 
+        }
+
+        #weatherIconContainer img { /* Targets img inside #weatherIconContainer for bottom card */
+            width: 40px; 
+            height: 40px;
+            display: block;
+            filter: drop-shadow(0 2px 3px rgba(0,0,0,0.2));
+        }
+
+        #weatherInfoSection { /* Targets section inside .weather-main-info for bottom card */
+            flex-grow: 1;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+
+        #weatherTemp { /* Targets temp inside #weatherInfoSection for bottom card */
+            font-size: 1.5em;
+            font-weight: 600;
+        }
+
+        #weatherDesc { /* Targets desc inside #weatherInfoSection for bottom card */
+            font-size: 0.8em;
+            text-transform: capitalize;
+            opacity: 0.9;
+            margin-top: -2px;
+        }
+
+        #weatherWind { /* Targets wind inside #weatherInfoSection for bottom card */
+            font-size: 0.7em;
+            opacity: 0.8;
+            margin-top: 2px;
+        }
+        
+        /* Warning section is now separate at the top, so #weatherWarningSection in card is removed/ignored */
+
+        #hourlyForecastDisplay { /* Targets display inside .weather-top-row for bottom card */
+            display: flex;
+            overflow-x: auto;
+            gap: 8px;
+            padding: 5px 0px; 
+            flex-grow: 1; 
+            max-height: 80px; /* Limit height of hourly forecast scroll */
+        }
+
+        .hourly-forecast-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center; 
+            padding: 6px 4px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.08);
+            min-width: 60px; 
+            text-align: center;
+            flex-shrink: 0; 
+        }
+        .hourly-forecast-item .time {
+            font-size: 0.65em;
+            font-weight: 500;
+            margin-bottom: 2px;
+            color: rgba(255,255,255,0.9);
+        }
+        .hourly-forecast-item img {
+            width: 28px; 
+            height: 28px;
+            margin-bottom: 2px;
+            filter: drop-shadow(0 1px 2px rgba(0,0,0,0.15));
+        }
+        .hourly-forecast-item .temp {
+            font-size: 0.8em;
+            font-weight: 600;
+        }
+        /* --- End Bottom Weather Card Styles --- */
+        
+        .main-container { 
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            gap: 24px;
+            max-width: 1400px;
+            margin: 0 auto;
+             /* Height calculated based on body's padding */
+            height: calc(100vh - var(--body-padding-top, 70px) - var(--body-padding-bottom, 130px) - 40px); /* 20px*2 for body padding */
+        }
+        
+        .left-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            min-width: 0;
+        }
+        
+        .right-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .glass-card { 
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 20px;
+            padding: 24px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+        }
+        
+        .glass-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 48px rgba(0, 0, 0, 0.15);
+        }
+        
+        .card-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .card-icon {
+            width: 24px;
+            height: 24px;
+            background: linear-gradient(45deg, #ff6b6b, #ffd93d);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: #000;
+            font-size: 12px;
+        }
+        
+        h2, h3 { 
+            color: #ffffff;
+            font-weight: 600;
+            font-size: 18px;
+            letter-spacing: -0.5px;
+        }
+        
+        .connection-section {
+            flex: 0 0 auto;
+        }
+        
+        .video-section {
+            flex: 1;
+            min-height: 400px;
+        }
+        
+        .messages-section {
+            flex: 0 0 180px; 
+        }
+        
+        #downloadLinkContainer { 
+            padding: 10px 0px; 
+            margin-top: 10px;
+            background-color: rgba(0,0,0,0.1);
+            border-radius: 12px;
+            text-align: center; 
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        #downloadLinkContainer a {
+            display: inline-block;
+            padding: 10px 18px;
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            text-decoration: none;
+            border-radius: 10px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        #downloadLinkContainer a:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 18px rgba(0,0,0,0.15);
+            background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+        }
+
+        .ip-config { 
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .ip-input-group {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+        
+        .ip-input-group label {
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.9);
+            min-width: 80px;
+        }
+        
+        input[type="text"], input[type="number"] { 
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            padding: 12px 16px;
+            color: #ffffff;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(10px);
+        }
+        
+        input[type="text"]:focus, input[type="number"]:focus {
+            outline: none;
+            border-color: #4facfe;
+            box-shadow: 0 0 0 3px rgba(79, 172, 254, 0.1);
+            background: rgba(255, 255, 255, 0.15);
+        }
+        
+        input[type="text"] {
+            width: 180px;
+        }
+        
+        input[type="number"] {
+            width: 80px;
+        }
+        
+        button { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 12px;
+            padding: 12px 20px;
+            color: white;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        button:hover { 
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button:disabled { 
+            background: rgba(255, 255, 255, 0.1);
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+            opacity: 0.5;
+        }
+        
+        .btn-success { 
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+        
+        .btn-danger { 
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+        }
+        .top-status-bar {
+            position: fixed;
+            top: 50px; 
+            right: 30px;
+            background: linear-gradient(135deg, #3a3a3c 0%, #58585a 100%); 
+            color: #f0f0f0;
+            padding: 8px 18px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            z-index: 1001; /* Below top warning banner, above bottom weather card */
+            font-family: 'Inter', sans-serif;
+            font-size: 0.9em;
+            font-weight: 500;
+            min-width: 150px; 
+            text-align: center;
+            opacity: 0.95;
+            transition: background 0.4s ease, color 0.4s ease, opacity 0.3s ease;
+        }
+
+        .top-status-bar.status-success {
+            background: linear-gradient(135deg, #28a745 0%, #218838 100%);
+            color: white;
+        }
+        .top-status-bar.status-warning {
+            background: linear-gradient(135deg, #ffc107 0%, #e0a800 100%);
+            color: #333;
+        }
+        .top-status-bar.status-error {
+            background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+            color: white;
+        }
+        .top-status-bar.status-info {
+            background: linear-gradient(135deg, #17a2b8 0%, #138496 100%);
+            color: white;
+        }
+        .top-status-bar.status-tracking {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+            color: white;
+        }
+        
+        .btn-warning { 
+            background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
+            color: #333;
+        }
+        
+        .btn-info { 
+            background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+            color: #333;
+        }
+        
+        .status-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 0;
+        }
+        
+        .status-indicator { 
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            box-shadow: 0 0 12px currentColor;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .status-connected { 
+            background-color: #4facfe;
+            color: #4facfe;
+        }
+        
+        .status-disconnected { 
+            background-color: #fa709a;
+            color: #fa709a;
+        }
+        
+        .status-connecting { 
+            background-color: #ffecd2;
+            color: #ffecd2;
+        }
+        
+        .video-container {
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .video-frame {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 16px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .video-container img { 
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 16px;
+        }
+        
+        .controls-grid { 
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        
+        .takeoff-control {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 20px;
+            margin: 16px 0;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .takeoff-input-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        
+        .takeoff-input-group label {
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.9);
+            white-space: nowrap;
+        }
+        
+        .takeoff-button {
+            width: 100%;
+        }
+        
+        .data-display {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 16px;
+            padding: 20px;
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            color: rgba(255, 255, 255, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            white-space: pre-wrap;
+            overflow-y: auto;
+            height: 200px;
+        }
+        
+        .telemetry-card, .mango-card {
+            flex: 1;
+        }
+        
+        #messages { 
+            list-style-type: none;
+            max-height: 120px;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            font-size: 12px;
+        }
+        
+        #messages li { 
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.8);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        #messages li:last-child { 
+            border-bottom: none;
+        }
+        
+        /* Responsive design */
+        @media (max-width: 1200px) {
+            .main-container {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto 1fr;
+                height: calc(100vh - var(--body-padding-top, 70px) - var(--body-padding-bottom, 130px) - 20px);
+            }
+            
+            .right-panel {
+                grid-row: 1;
+                flex-direction: row;
+                flex-wrap: wrap;
+            }
+            
+            .right-panel .glass-card {
+                flex: 1;
+                min-width: 280px;
+            }
+        }
+        
+        @media (max-width: 768px) { /* Combined mobile styles */
+            body {
+                 /* padding-top: 70px;  Already set, warning banner overlays if needed */
+                 padding-bottom: 150px; /* Ensure enough space for potentially taller bottom card on mobile */
+            }
+            .weather-card-bottom { /* Bottom weather card on mobile */
+                max-width: calc(100% - 20px); /* Slightly less than full width */
+                bottom: 5px;
+                padding: 10px 12px;
+            }
+            .weather-top-row { /* Stack main info and forecast vertically on mobile */
+                flex-direction: column; 
+                gap: 8px;
+            }
+            .weather-main-info {
+                min-width: 100%; 
+            }
+            #hourlyForecastDisplay { /* Full width when stacked */
+                width: 100%;
+                border-top: 1px solid rgba(255,255,255,0.15); 
+                margin-top: 8px; 
+                padding-top: 8px;
+                max-height: 75px;
+            }
+             .hourly-forecast-item {
+                min-width: 55px;
+                padding: 5px 3px;
+            }
+            .hourly-forecast-item img { width: 25px; height: 25px; }
+            #weatherTemp { font-size: 1.3em; }
+            #weatherIconContainer img { width: 35px; height: 35px; }
+
+
+            .main-container {
+                gap: 16px;
+            }
+            
+            .glass-card {
+                padding: 20px;
+                border-radius: 16px;
+            }
+            
+            .ip-input-group {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .controls-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .right-panel {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Top Weather Warning Banner -->
+    <div id="topWeatherWarningBanner">
+        <div id="topWeatherWarningText"></div>
+    </div>
+
+    <div id="topStatusBar" class="top-status-bar">Status: Idle</div>
+
+    <!-- Main content container for drone controls, video etc. -->
+    <div class="main-container">
+        <div class="left-panel">
+            <div class="glass-card connection-section">
+                <div class="card-header">
+                    <div class="card-icon">🔗</div>
+                    <h3>Connection Status</h3>
+                </div>
+                <div class="ip-config">
+                    <div class="ip-input-group">
+                        <label for="jetsonIpInput">Jetson IP:</label>
+                        <input type="text" id="jetsonIpInput" placeholder="192.168.1.100" pattern="^(\d{1,3}\.){3}\d{1,3}$">
+                        <button onclick="updateJetsonIP()" class="btn-info">Update IP</button>
+                        <button onclick="testConnection()" class="btn-warning">Test Connection</button>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-indicator" id="connectionStatus"></span>
+                        <span id="connectionText">Not Connected</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="glass-card video-section">
+                <div class="card-header">
+                    <div class="card-icon">📹</div>
+                    <h3>Video Feed</h3>
+                    <button onclick="toggleRecording()" id="recordButton" class="btn-info" style="margin-left: auto; min-width: 140px;">Start Recording</button>
+                </div>
+                <div class="video-container">
+                    <div class="video-frame">
+                        <img id="videoFeed" src="" width="640" height="480" alt="Configure Jetson IP to load video feed" crossorigin="anonymous">
+                    </div>
+                </div>
+            </div>
+            
+            <div class="glass-card messages-section">
+                <div class="card-header">
+                    <div class="card-icon">💬</div>
+                    <h3>System Messages</h3>
+                </div>
+                <ul id="messages"><li>Welcome! Configure Jetson IP and test connection to begin.</li></ul>
+            </div>
+             <div id="downloadLinkContainer"></div>
+        </div>
+
+        <div class="right-panel">
+            <div class="glass-card">
+                <div class="card-header">
+                    <div class="card-icon">🚁</div>
+                    <h3>Drone Controls</h3>
+                </div>
+                <div class="controls-grid">
+                    <button onclick="sendCommand('/command/arm')" class="btn-success">Arm Drone</button>
+                    <button onclick="sendCommand('/command/disarm')" class="btn-danger">Disarm Drone</button>
+                </div>
+                <div class="takeoff-control">
+                    <div class="takeoff-input-group">
+                        <label for="takeoffAlt">Takeoff Alt (m):</label>
+                        <input type="number" id="takeoffAlt" value="3.0" min="1" max="10">
+                    </div>
+                    <button onclick="sendTakeoffCommand()" class="takeoff-button">Takeoff</button>
+                </div>
+                <div class="controls-grid">
+                    <button onclick="sendCommand('/command/land')" class="btn-warning">Land</button>
+                    <button onclick="sendCommand('/command/rtl')" class="btn-info">Return to Launch</button>
+                </div>
+            </div>
+            
+            <div class="glass-card">
+                <div class="card-header">
+                    <div class="card-icon">🥭</div>
+                    <h3>Mango Tracking</h3>
+                </div>
+                <div class="controls-grid">
+                    <button onclick="sendCommand('/command/start_tracking')" id="startTrackingBtn" class="btn-success">Start Tracking</button>
+                    <button onclick="sendCommand('/command/stop_tracking')" id="stopTrackingBtn" class="btn-danger">Stop Tracking</button>
+                </div>
+            </div>
+            
+            <div class="glass-card telemetry-card">
+                <div class="card-header">
+                    <div class="card-icon">📊</div>
+                    <h3>Telemetry</h3>
+                </div>
+                <div class="data-display" id="telemetryData">Configure Jetson IP to connect...</div>
+            </div>
+             
+            <div class="glass-card mango-card">
+                <div class="card-header">
+                    <div class="card-icon">🎯</div>
+                    <h3>Mango Detection</h3>
+                </div>
+                <div class="data-display" id="mangoData">Tracking inactive or no data.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Weather Card HTML -->
+    <div id="weatherCard" class="weather-card-bottom"> <!-- ID "weatherCard" reused for bottom display -->
+        <div class="weather-top-row"> 
+            <div class="weather-main-info"> 
+                <div id="weatherIconContainer">
+                    <img id="weatherIconTag" src="" alt="Weather Icon">
+                </div>
+                <div id="weatherInfoSection">
+                    <div id="weatherTemp">--°C</div>
+                    <div id="weatherDesc">Initializing...</div>
+                    <div id="weatherWind">Wind: -- m/s</div>
+                </div>
+            </div>
+            <div id="hourlyForecastDisplay">
+                <!-- Hourly forecast items will be dynamically inserted here -->
+            </div>
+        </div>
+        <!-- The #weatherWarningSection is removed from here and handled by #topWeatherWarningBanner -->
+    </div>
+
+
+    <script>
+        // Make sure body padding CSS variables are set for JS to use if needed, or rely on CSS.
+        document.documentElement.style.setProperty('--body-padding-top', getComputedStyle(document.body).paddingTop);
+        document.documentElement.style.setProperty('--body-padding-bottom', getComputedStyle(document.body).paddingBottom);
+
+        let JETSON_IP = "";
+        let socket = null;
+        let connectionState = "disconnected";
+
+        let isCurrentlyRecording = false;
+        let lastRecordedFileName = null; 
+
+        let lastWeatherFetchTime = 0;
+        const WEATHER_FETCH_INTERVAL = 10 * 60 * 1000; 
+        let lastLat = null;
+        let lastLon = null;
+        const LOCATION_CHANGE_THRESHOLD = 0.005; 
+        
+        const TOMORROW_IO_API_KEY = 'Frdhol5qD8hZIoQoVmClewjcAEFcLsSS'; 
+
+        function updateConnectionStatus(status, message) {
+            const indicator = document.getElementById('connectionStatus');
+            const text = document.getElementById('connectionText');
+            
+            indicator.className = 'status-indicator status-' + status;
+            text.textContent = message;
+            connectionState = status;
+        }
+
+        function updateJetsonIP() {
+            const ipInput = document.getElementById('jetsonIpInput');
+            const newIP = ipInput.value.trim();
+            
+            if (!newIP) {
+                alert('Please enter a valid IP address');
+                return;
+            }
+            
+            if (!newIP.match(/^(\d{1,3}\.){3}\d{1,3}$/)) {
+                alert('Please enter a valid IP address format (e.g., 192.168.1.100)');
+                return;
+            }
+            
+            JETSON_IP = newIP;
+            logMessage('Jetson IP updated to: ' + JETSON_IP);
+            
+            const downloadContainer = document.getElementById('downloadLinkContainer');
+            if (downloadContainer) downloadContainer.innerHTML = '';
+            lastRecordedFileName = null;
+            if (isCurrentlyRecording) { 
+                const recordButton = document.getElementById('recordButton');
+                recordButton.textContent = 'Start Recording';
+                recordButton.classList.remove('btn-danger');
+                recordButton.classList.add('btn-info');
+                isCurrentlyRecording = false;
+            }
+
+            if (socket && socket.connected) {
+                socket.disconnect();
+            }
+            
+            document.getElementById('videoFeed').src = 'http://' + JETSON_IP + ':5000/video_feed';
+            initializeSocket();
+        }
+
+        function testConnection() {
+            if (!JETSON_IP) {
+                alert('Please set Jetson IP first');
+                return;
+            }
+            
+            updateConnectionStatus('connecting', 'Testing connection...');
+            logMessage('Testing connection to: ' + JETSON_IP);
+            
+            fetch('http://' + JETSON_IP + ':5000/status', { 
+                method: 'GET',
+                mode: 'cors',
+                timeout: 5000
+            })
+            .then(response => {
+                if (response.ok) {
+                    updateConnectionStatus('connected', 'Connection successful');
+                    logMessage('Connection test successful');
+                    if (!socket || !socket.connected) initializeSocket(); 
+                } else {
+                    throw new Error('Server responded with status: ' + response.status);
+                }
+            })
+            .catch(error => {
+                updateConnectionStatus('disconnected', 'Connection failed');
+                logMessage('Connection test failed: ' + error.message);
+            });
+        }
+        
+        function updateTopStatusBar(message, type = 'default') {
+            const statusBar = document.getElementById('topStatusBar');
+            if (statusBar) {
+                statusBar.textContent = message;
+                statusBar.className = 'top-status-bar'; 
+                if (type && type !== 'default') {
+                    statusBar.classList.add('status-' + type);
+                }
+            }
+        }
+
+        function fetchAndUpdateWeather(lat, lon) {
+            if (!TOMORROW_IO_API_KEY) {
+                updateWeatherCardDisplay({ error: "Tomorrow.io API key not configured." });
+                console.warn("Tomorrow.io API Key is not configured.");
+                return;
+            }
+            if (lat === 0 && lon === 0) {
+                 updateWeatherCardDisplay({ error: "Invalid location (0,0) from drone." });
+                 return;
+            }
+
+            const now = Date.now();
+            const significantLocationChange = (lastLat === null || lastLon === null) ||
+                                             (Math.abs(lat - lastLat) > LOCATION_CHANGE_THRESHOLD ||
+                                              Math.abs(lon - lastLon) > LOCATION_CHANGE_THRESHOLD);
+
+            if (significantLocationChange || (now - lastWeatherFetchTime > WEATHER_FETCH_INTERVAL)) {
+                logMessage(`Fetching weather forecast (Tomorrow.io) for Lat: ${lat.toFixed(4)}, Lon: ${lon.toFixed(4)}`);
+                lastWeatherFetchTime = now;
+                lastLat = lat;
+                lastLon = lon;
+
+                const fields = "temperature,windSpeed,weatherCode,visibility"; 
+                const timesteps = "1h"; 
+                const weatherApiUrl = `https://api.tomorrow.io/v4/weather/forecast?location=${lat},${lon}&fields=${fields}×teps=${timesteps}&units=metric&apikey=${TOMORROW_IO_API_KEY}`;
+                
+                fetch(weatherApiUrl)
+                    .then(response => {
+                        if (!response.ok) {
+                            return response.json().then(errData => {
+                                throw new Error(`HTTP error ${response.status}: ${errData.message || errData.type || response.statusText}`);
+                            }).catch(() => {
+                                throw new Error(`HTTP error ${response.status}: ${response.statusText}`);
+                            });
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        updateWeatherCardDisplay({ data: data, source: 'tomorrow-io-forecast' });
+                    })
+                    .catch(error => {
+                        console.error("Error fetching weather forecast (Tomorrow.io):", error);
+                        updateWeatherCardDisplay({ error: `Weather API (Tomorrow.io Forecast): ${error.message}` });
+                    });
+            }
+        }
+
+        function getWeatherIconName_TomorrowIO(weatherCode, forecastTime) {
+            const hour = new Date(forecastTime).getHours();
+            const isDay = hour >= 6 && hour < 18; 
+
+            const code = parseInt(weatherCode);
+            if (code === 1000) return isDay ? "01d" : "01n"; 
+            if (code === 1100 || code === 1101) return isDay ? "02d" : "02n"; 
+            if (code === 1102) return isDay ? "03d" : "03n"; 
+            if (code === 1001) return isDay ? "04d" : "04n"; 
+            if (code === 2000 || code === 2100) return "50d"; 
+            if (code >= 4000 && code <= 4201) return "09d"; 
+            if (code >= 5000 && code <= 5101) return "13d"; 
+            if (code >= 8000 && code <= 8001) return "11d"; 
+            return isDay ? "01d" : "01n"; 
+        }
+
+        function getWeatherDescription_TomorrowIO(weatherCode) {
+            const code = parseInt(weatherCode);
+            const descriptions = {
+                1000: "Clear", 1001: "Cloudy",
+                1100: "Mostly Clear", 1101: "Partly Cloudy", 1102: "Mostly Cloudy",
+                2000: "Fog", 2100: "Light Fog",
+                4000: "Drizzle", 4001: "Rain", 4200: "Light Rain", 4201: "Heavy Rain",
+                5000: "Snow", 5001: "Flurries", 5100: "Light Snow", 5101: "Heavy Snow",
+                8000: "Thunderstorm"
+            };
+            return descriptions[code] || `Code: ${code}`; 
+        }
+
+        function updateWeatherCardDisplay(weatherInfo) {
+            // --- Bottom Weather Card Elements ---
+            const bottomWeatherCardEl = document.getElementById('weatherCard'); // This is now the bottom card
+            const mainIconEl = bottomWeatherCardEl.querySelector('#weatherIconTag');
+            const mainTempEl = bottomWeatherCardEl.querySelector('#weatherTemp');
+            const mainDescEl = bottomWeatherCardEl.querySelector('#weatherDesc');
+            const mainWindEl = bottomWeatherCardEl.querySelector('#weatherWind');
+            const hourlyForecastContainer = bottomWeatherCardEl.querySelector('#hourlyForecastDisplay');
+
+            // --- Top Warning Banner Elements ---
+            const topWarningBannerEl = document.getElementById('topWeatherWarningBanner');
+            const topWarningTextEl = document.getElementById('topWeatherWarningText');
+
+            // Initial state: hide banner, show card (will be populated or show error)
+            bottomWeatherCardEl.style.display = 'flex'; 
+            topWarningBannerEl.style.display = 'none';
+            topWarningTextEl.textContent = '';
+            if(hourlyForecastContainer) hourlyForecastContainer.innerHTML = '';
+
+
+            if (weatherInfo.error) {
+                mainDescEl.textContent = weatherInfo.error; // Show error in bottom card
+                if(mainIconEl) { mainIconEl.src = ""; mainIconEl.alt = "Error"; }
+                mainTempEl.textContent = '--°C';
+                mainWindEl.textContent = 'Wind: -- m/s';
+                // No warning to show at top
+                return;
+            }
+
+            const rawData = weatherInfo.data;
+            const source = weatherInfo.source;
+
+            if (source === 'tomorrow-io-forecast') {
+                if (!rawData || !rawData.timelines || !rawData.timelines.hourly || rawData.timelines.hourly.length === 0) {
+                    mainDescEl.textContent = "Forecast data missing or invalid.";
+                    if(mainIconEl) {mainIconEl.src = ""; mainIconEl.alt = "Error";}
+                    mainTempEl.textContent = '--°C'; mainWindEl.textContent = 'Wind: -- m/s';
+                    return;
+                }
+
+                const hourlyData = rawData.timelines.hourly;
+                
+                const currentHourInterval = hourlyData[0];
+                const currentHourValues = currentHourInterval.values;
+                
+                const currentTemp = currentHourValues.temperature;
+                const currentDesc = getWeatherDescription_TomorrowIO(currentHourValues.weatherCode);
+                const currentWindSpeed = currentHourValues.windSpeed;
+                const currentIconName = getWeatherIconName_TomorrowIO(currentHourValues.weatherCode, currentHourInterval.time);
+                const currentIconUrl = `http://openweathermap.org/img/wn/${currentIconName}@2x.png`;
+
+                if(mainIconEl) { mainIconEl.src = currentIconUrl; mainIconEl.alt = currentDesc; }
+                mainTempEl.textContent = (typeof currentTemp !== 'undefined') ? `${Math.round(currentTemp)}°C` : '--°C';
+                mainDescEl.textContent = currentDesc ? (currentDesc.charAt(0).toUpperCase() + currentDesc.slice(1)) : "Loading...";
+                mainWindEl.textContent = (typeof currentWindSpeed !== 'undefined') ? `Wind: ${currentWindSpeed.toFixed(1)} m/s` : 'Wind: -- m/s';
+
+                const hoursToDisplayInList = Math.min(hourlyData.length, 8); 
+
+                for (let i = 0; i < hoursToDisplayInList; i++) { 
+                    const interval = hourlyData[i];
+                    const values = interval.values;
+                    const forecastTime = new Date(interval.time);
+
+                    const itemDiv = document.createElement('div');
+                    itemDiv.className = 'hourly-forecast-item';
+
+                    const timeEl = document.createElement('div');
+                    timeEl.className = 'time';
+                    timeEl.textContent = forecastTime.toLocaleTimeString([], { hour: 'numeric', hour12: true }).replace(':00','').replace(' AM','am').replace(' PM','pm');
+
+
+                    const iconElItem = document.createElement('img'); // Different variable name
+                    const iconNameItem = getWeatherIconName_TomorrowIO(values.weatherCode, interval.time);
+                    iconElItem.src = `http://openweathermap.org/img/wn/${iconNameItem}.png`; 
+                    iconElItem.alt = getWeatherDescription_TomorrowIO(values.weatherCode);
+
+                    const tempElItem = document.createElement('div');
+                    tempElItem.className = 'temp';
+                    tempElItem.textContent = (typeof values.temperature !== 'undefined') ? `${Math.round(values.temperature)}°` : '--°';
+                    
+                    itemDiv.appendChild(timeEl);
+                    itemDiv.appendChild(iconElItem);
+                    itemDiv.appendChild(tempElItem);
+                    if(hourlyForecastContainer) hourlyForecastContainer.appendChild(itemDiv);
+                }
+                
+                let warnings = [];
+                const hoursToCheckForWarning = Math.min(hourlyData.length, 4); 
+                for (let i = 0; i < hoursToCheckForWarning; i++) {
+                    const intervalValues = hourlyData[i].values;
+                    const wc = parseInt(intervalValues.weatherCode);
+                    const visibility = intervalValues.visibility;
+                    const windSpeed = intervalValues.windSpeed;
+
+                    if (wc >= 4000 && wc <= 4201) warnings.push("Rain/Drizzle"); 
+                    if (wc >= 5000 && wc <= 5101) warnings.push("Snow"); 
+                    if (wc === 2000 || wc === 2100) warnings.push("Fog"); 
+                    if (wc === 8000) warnings.push("Thunderstorm"); 
+                    if (typeof visibility !== 'undefined' && visibility < 1) { 
+                         warnings.push("Low visibility");
+                    }
+                    if (typeof windSpeed !== 'undefined' && windSpeed > 10) { 
+                        warnings.push("High winds");
+                    }
+                }
+                const uniqueWarnings = [...new Set(warnings)];
+                if (uniqueWarnings.length > 0) {
+                    topWarningTextEl.textContent = "⚠️ Upcoming: " + uniqueWarnings.join(" / ") + "!";
+                    topWarningBannerEl.style.display = 'block';
+                } else {
+                    topWarningBannerEl.style.display = 'none';
+                }
+
+            } else { 
+                 mainDescEl.textContent = "Unknown weather data source.";
+                 if(mainIconEl) {mainIconEl.src = ""; mainIconEl.alt = "Error";}
+                 mainTempEl.textContent = '--°C'; mainWindEl.textContent = 'Wind: -- m/s';
+                 return;
+            }
+        }
+
+        async function toggleRecording() {
+            const recordButton = document.getElementById('recordButton');
+            const jetsonIPInput = document.getElementById('jetsonIpInput').value.trim(); 
+
+            if (!JETSON_IP && !jetsonIPInput) { 
+                alert("Please set and Update Jetson IP first.");
+                logMessage("Recording action failed: Jetson IP not set.");
+                return;
+            }
+            const currentIPToUse = JETSON_IP || jetsonIPInput; 
+
+            if (!socket || !socket.connected) {
+                alert("Not connected to Jetson server. Please test connection first.");
+                logMessage("Recording action failed: Not connected to server.");
+                return;
+            }
+
+            recordButton.disabled = true; 
+
+            if (!isCurrentlyRecording) { 
+                try {
+                    logMessage('Attempting to start recording...');
+                    const response = await fetch('http://' + currentIPToUse + ':5000/command/start_recording', { 
+                        method: 'POST', 
+                        mode: 'cors',
+                        headers: { 'Content-Type': 'application/json' }, 
+                    });
+                    const data = await response.json();
+
+                    if (response.ok && data.status === 'success') {
+                        logMessage('Recording started: ' + data.message);
+                        recordButton.textContent = 'Stop Recording';
+                        recordButton.classList.remove('btn-info');
+                        recordButton.classList.add('btn-danger');
+                        isCurrentlyRecording = true;
+                        lastRecordedFileName = null; 
+                        const existingDownloadLink = document.getElementById('downloadLinkContainer');
+                        if (existingDownloadLink) existingDownloadLink.innerHTML = '';
+                    } else {
+                        logMessage('Error starting recording: ' + (data.message || `HTTP ${response.status}`));
+                        alert('Error starting recording: ' + (data.message || `HTTP ${response.status}`));
+                    }
+                } catch (error) {
+                    logMessage('Failed to send start recording command: ' + error.message);
+                    alert('Failed to send start recording command: ' + error.message);
+                }
+            } else { 
+                try {
+                    logMessage('Attempting to stop recording...');
+                    const response = await fetch('http://' + currentIPToUse + ':5000/command/stop_recording', { 
+                        method: 'POST', 
+                        mode: 'cors',
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                    const data = await response.json();
+
+                    if (response.ok && data.status === 'success') {
+                        logMessage('Recording stopped: ' + data.message);
+                        recordButton.textContent = 'Start Recording';
+                        recordButton.classList.remove('btn-danger');
+                        recordButton.classList.add('btn-info');
+                        isCurrentlyRecording = false;
+                        lastRecordedFileName = data.filename; 
+
+                        if (lastRecordedFileName) {
+                            offerDownloadLink(currentIPToUse, lastRecordedFileName);
+                        }
+                    } else {
+                        logMessage('Error stopping recording: ' + (data.message || `HTTP ${response.status}`));
+                        alert('Error stopping recording: ' + (data.message || `HTTP ${response.status}`));
+                    }
+                } catch (error) {
+                    logMessage('Failed to send stop recording command: ' + error.message);
+                    alert('Failed to send stop recording command: ' + error.message);
+                }
+            }
+            recordButton.disabled = false; 
+        }
+
+        function offerDownloadLink(ip, filename) {
+            let downloadContainer = document.getElementById('downloadLinkContainer');
+            if (!downloadContainer) { 
+                console.error("Download link container not found in HTML!");
+                logMessage("Error: Download link container missing.");
+                return;
+            }
+            downloadContainer.innerHTML = ''; 
+
+            const downloadLink = document.createElement('a');
+            downloadLink.href = `http://${ip}:5000/download_video/${filename}`;
+            downloadLink.textContent = `Download: ${filename}`;
+            downloadLink.setAttribute('download', filename); 
+            
+            downloadContainer.appendChild(downloadLink);
+            logMessage(`Video '${filename}' is ready for download.`);
+        }
+
+        function initializeSocket() {
+            if (!JETSON_IP) {
+                logMessage("Cannot initialize socket: Jetson IP not set");
+                return;
+            }
+
+            if (socket && socket.connected) {
+                socket.disconnect();
+            }
+
+            updateConnectionStatus('connecting', 'Connecting to server...');
+            
+            socket = io.connect('http://' + JETSON_IP + ':5000', {
+                reconnectionAttempts: 5,
+                reconnectionDelay: 3000,
+                timeout: 10000
+            });
+
+            socket.on('connect', function() {
+                updateConnectionStatus('connected', 'Connected to server');
+                logMessage('Socket.IO: Connected to Jetson server (' + JETSON_IP + ')');
+                document.getElementById('telemetryData').textContent = 'Connected. Waiting for data...';
+                if (lastLat && lastLon) {
+                    fetchAndUpdateWeather(lastLat, lastLon); 
+                } else {
+                    updateWeatherCardDisplay({ error: "Waiting for drone location..." });
+                }
+            });
+
+            socket.on('connect_error', function(error) {
+                updateConnectionStatus('disconnected', 'Connection error');
+                logMessage('Socket.IO: Connection error - ' + error.message);
+                document.getElementById('telemetryData').textContent = 'Connection Error. Check Jetson IP and server.';
+                updateWeatherCardDisplay({ error: "Server connection lost." });
+            });
+
+            socket.on('disconnect', function(reason) {
+                updateConnectionStatus('disconnected', 'Disconnected');
+                logMessage('Socket.IO: Disconnected from Jetson server. Reason: ' + reason);
+                document.getElementById('telemetryData').textContent = 'Disconnected. Check connection.';
+                updateWeatherCardDisplay({ error: "Disconnected from server." });
+                
+                if (isCurrentlyRecording) {
+                    logMessage("Server disconnected during recording. Recording stopped.");
+                    const recordButton = document.getElementById('recordButton');
+                    recordButton.textContent = 'Start Recording';
+                    recordButton.classList.remove('btn-danger');
+                    recordButton.classList.add('btn-info');
+                    recordButton.disabled = false;
+                    isCurrentlyRecording = false;
+                }
+            });
+
+            socket.on('telemetry_update', function(data) {
+                let telemetryString = '';
+                for (const key in data) {
+                    let value = data[key];
+                    if (typeof value === 'number' && !Number.isInteger(value)) {
+                        value = value.toFixed(2);
+                    }
+                    telemetryString += key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) + ': ' + value + '\n';
+                }
+                document.getElementById('telemetryData').textContent = telemetryString;
+
+                let topStatusMsg = "Status: Unknown";
+                let topStatusType = 'default';
+
+                if (!JETSON_IP || connectionState !== 'connected') {
+                    topStatusMsg = "Status: Disconnected";
+                    topStatusType = 'error';
+                } else if (data.system_status === 'UNINIT' || data.system_status === 'BOOT' || data.system_status === 'CALIBRATING') {
+                    topStatusMsg = `Status: Initializing (${data.system_status})`;
+                    topStatusType = 'info';
+                } else if (!data.armed) {
+                    topStatusMsg = `Status: ${data.mode || "N/A"} | Disarmed`;
+                    topStatusType = 'info';
+                } else { 
+                    topStatusMsg = `Status: ${data.mode || "N/A"} | Armed`;
+                    topStatusType = 'success'; 
+
+                    if (data.mango_tracking_active) {
+                        let trackingState = data.mango_detected ? "Detected" : "Searching";
+                        topStatusMsg = `Status: Tracking Mango (${trackingState})`;
+                        topStatusType = 'tracking'; 
+                    } else if (data.search_state && data.search_state !== "idle" && data.mode === "GUIDED") {
+                        let readableSearchState = data.search_state.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                        topStatusMsg = `Status: Searching (${readableSearchState})`;
+                        topStatusType = 'warning';
+                    } else if (data.mode === "LAND") {
+                        topStatusMsg = "Status: Landing";
+                        topStatusType = 'warning';
+                    } else if (data.mode === "RTL") {
+                        topStatusMsg = "Status: Returning to Launch";
+                        topStatusType = 'warning';
+                    } else if (data.mode === "TAKEOFF" || (data.mode === "GUIDED" && data.altitude > 0.3 && data.altitude < (parseFloat(document.getElementById('takeoffAlt').value || "3.0") - 0.3) && data.groundspeed < 0.5) ) {
+                        topStatusMsg = "Status: Taking Off / Ascending";
+                        topStatusType = 'info';
+                    } else if (data.mode === "GUIDED" && data.armed) {
+                        topStatusMsg = "Status: Hovering / Guided"; 
+                        topStatusType = 'success';
+                    }
+                }
+                updateTopStatusBar(topStatusMsg, topStatusType);
+
+                if (data.latitude != null && data.longitude != null && (data.latitude !== 0 || data.longitude !== 0)) {
+                    fetchAndUpdateWeather(parseFloat(data.latitude), parseFloat(data.longitude));
+                } else if (lastLat === null) { 
+                    updateWeatherCardDisplay({ error: "Waiting for valid drone location..." });
+                }
+            });
+
+            socket.on('mango_update', function(data) {
+                let mangoString = 'Tracking Active: ' + data.tracking_active + '\n';
+                mangoString += 'Detected: ' + data.detected + '\n';
+                if (data.detected && data.tracking_active) {
+                    mangoString += 'Position: (' + (data.x || 0) + ', ' + (data.y || 0) + ')\n';
+                    mangoString += 'Confidence: ' + (data.confidence ? data.confidence.toFixed(2) : 'N/A') + '\n';
+                }
+                mangoString += 'Frame: ' + (data.frame_width || 'N/A') + 'x' + (data.frame_height || 'N/A') + '\n';
+                mangoString += 'CPU Temp: ' + (data.cpu_temp !== "N/A" && data.cpu_temp !== null ? data.cpu_temp + '°C' : 'N/A');
+                document.getElementById('mangoData').textContent = mangoString;
+
+                const startBtn = document.getElementById('startTrackingBtn');
+                const stopBtn = document.getElementById('stopTrackingBtn');
+                if (data.tracking_active) {
+                    startBtn.disabled = true;
+                    startBtn.style.background = 'linear-gradient(135deg, #6c757d, #5a6268)'; 
+                    stopBtn.disabled = false;
+                    stopBtn.style.background = 'linear-gradient(135deg, #fa709a 0%, #fee140 100%)'; 
+                } else {
+                    startBtn.disabled = false;
+                    startBtn.style.background = 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)'; 
+                    stopBtn.disabled = true;
+                    stopBtn.style.background = 'linear-gradient(135deg, #6c757d, #5a6268)'; 
+                }
+            });
+            
+            socket.on('status_update', function(data) {
+                logMessage('SERVER: ' + data.message);
+                const msgLower = data.message.toLowerCase();
+
+                if (msgLower.includes("takeoff to")) {
+                    updateTopStatusBar(`Status: Takeoff to ${msgLower.match(/(\d+(\.\d+)?)m/)[0]}`, 'info');
+                } else if (msgLower.includes("landing initiated")) {
+                    updateTopStatusBar("Status: Landing Initiated", 'warning');
+                } else if (msgLower.includes("return to launch initiated") || msgLower.includes("rtl initiated")) {
+                    updateTopStatusBar("Status: RTL Initiated", 'warning');
+                } else if (msgLower.includes("mango tracking activated")) {
+                    updateTopStatusBar("Status: Tracking Mango", 'tracking'); 
+                } else if (msgLower.includes("mango lost. waiting")) {
+                    updateTopStatusBar("Status: Mango Lost (Waiting)", 'warning');
+                } else if (msgLower.includes("starting incremental rotation search")) {
+                    updateTopStatusBar("Status: Searching (Rotating)", 'warning');
+                } else if (msgLower.includes("moved 1m forward. starting new incremental rotation search")) {
+                    updateTopStatusBar("Status: Searching (New Area)", 'warning');
+                } else if (msgLower.includes("vehicle armed")) {
+                    updateTopStatusBar("Status: Armed", 'success');
+                } else if (msgLower.includes("vehicle disarmed")) {
+                    updateTopStatusBar("Status: Disarmed", 'info');
+                }
+                
+                const recordButton = document.getElementById('recordButton');
+                if (data.message && data.message.includes("REC ON:")) {
+                    if (!isCurrentlyRecording) {
+                        recordButton.textContent = 'Stop Recording';
+                        recordButton.classList.remove('btn-info');
+                        recordButton.classList.add('btn-danger');
+                        isCurrentlyRecording = true;
+                    }
+                } else if (data.message && data.message.includes("REC OFF:")) {
+                    if (isCurrentlyRecording) {
+                        recordButton.textContent = 'Start Recording';
+                        recordButton.classList.remove('btn-danger');
+                        recordButton.classList.add('btn-info');
+                        isCurrentlyRecording = false;
+                    }
+                }
+            });
+        }
+
+        function sendCommand(endpoint, body = null) {
+            if (!JETSON_IP) {
+                logMessage("Command not sent: Jetson IP not configured");
+                alert("Error: Please configure Jetson IP first");
+                return;
+            }
+            
+            if (!socket || !socket.connected) {
+                logMessage("Command not sent: Not connected to Jetson server");
+                alert("Error: Not connected to Jetson server. Please test connection first.");
+                return;
+            }
+
+            logMessage('Sending command: ' + endpoint + (body ? ' ' + JSON.stringify(body) : ''));
+            
+            fetch('http://' + JETSON_IP + ':5000' + endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: body ? JSON.stringify(body) : null,
+                mode: 'cors'
+            })
+            .then(function(response) {
+                if (!response.ok) {
+                    return response.json().then(errData => {
+                        throw new Error(errData.message || `HTTP error ${response.status}`);
+                    }).catch(() => {
+                        throw new Error(`HTTP error ${response.status} - ${response.statusText}`);
+                    });
+                }
+                return response.json();
+            })
+            .then(function(data) {
+                if (data.status === 'error') {
+                    logMessage('SERVER ERROR: ' + data.message);
+                    alert('Error: ' + data.message);
+                } else {
+                    logMessage('Server response: ' + data.status + ' - ' + (data.message || 'OK'));
+                }
+            })
+            .catch(function(error) {
+                logMessage('Command Fetch error: ' + error.message);
+                alert('Failed to send command to ' + endpoint + '. ' + error.message);
+            });
+        }
+
+        function sendTakeoffCommand() {
+            const altitude = document.getElementById('takeoffAlt').value;
+            sendCommand('/command/takeoff', {altitude: altitude});
+        }
+
+        function logMessage(message) {
+            const messagesList = document.getElementById('messages');
+            const listItem = document.createElement('li');
+            const timestamp = new Date().toLocaleTimeString();
+            listItem.textContent = '[' + timestamp + '] ' + message;
+            messagesList.appendChild(listItem);
+            messagesList.scrollTop = messagesList.scrollHeight;
+            if (messagesList.children.length > 50) { 
+                messagesList.removeChild(messagesList.firstChild);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            updateConnectionStatus('disconnected', 'Not Connected');
+            
+            document.getElementById('startTrackingBtn').disabled = false; 
+            document.getElementById('stopTrackingBtn').disabled = true;
+            document.getElementById('stopTrackingBtn').style.background = 'linear-gradient(135deg, #6c757d, #5a6268)';
+            
+            const downloadContainer = document.getElementById('downloadLinkContainer');
+            if (downloadContainer) downloadContainer.innerHTML = '';
+
+            updateWeatherCardDisplay({ error: "Connect to Jetson and Drone..." }); // Initialize display state
+            updateTopStatusBar('Status: Idle'); 
+
+            logMessage('Interface loaded. Please configure Jetson IP to begin.');
+        });
+    </script>
+</body>
+</html>
