@@ -4,7 +4,125 @@
     <meta charset="UTF-8">
     <title>Mango Drone Control</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.min.js"></script>
+
+    <script>
+        let map;
+        let drawingManager;
+        let selectedShape; // This will hold the polygon
+        let geofenceActive = false;
+        let definedGeofencePoints = []; 
+
+        function initMap() {
+    // Try to get drone's last known location for centering, or use a default
+    let initialCenter = { lat: 20.5937, lng: 78.9629 }; // Default to India
+    if (lastLat && lastLon && lastLat !== 0 && lastLon !== 0) {
+        initialCenter = { lat: lastLat, lng: lastLon };
+    }
+
+    map = new google.maps.Map(document.getElementById('map'), {
+        center: initialCenter,
+        zoom: 10, // Zoom out initially
+        mapTypeId: 'satellite'
+    });
+
+    drawingManager = new google.maps.drawing.DrawingManager({
+        drawingMode: null, // No drawing mode active initially
+        drawingControl: true,
+        drawingControlOptions: {
+            position: google.maps.ControlPosition.TOP_CENTER,
+            drawingModes: [
+                google.maps.drawing.OverlayType.POLYGON
+            ]
+        },
+        polygonOptions: {
+            fillColor: '#4CAF50',
+            fillOpacity: 0.3,
+            strokeWeight: 2,
+            strokeColor: '#4CAF50',
+            clickable: true,
+            editable: true,
+            zIndex: 1
+        }
+    });
+
+    drawingManager.setMap(map);
+
+    google.maps.event.addListener(drawingManager, 'overlaycomplete', function(event) {
+        if (selectedShape) {
+            selectedShape.setMap(null); // Clear previous shape
+        }
+        selectedShape = event.overlay;
+        selectedShape.type = event.type;
+        drawingManager.setDrawingMode(null); // Exit drawing mode
+        document.getElementById('saveAreaBtn').style.display = 'inline-block';
+        document.getElementById('clearAreaBtn').style.display = 'inline-block';
+    });
+
+    // Button event listeners (define these inside DOMContentLoaded or after initMap)
+    document.getElementById('defineAreaBtn').addEventListener('click', function() {
+        document.getElementById('map').style.display = 'block';
+        if (map) {
+            map.setZoom(18); // Zoom in for defining area
+             if (lastLat && lastLon && lastLat !== 0 && lastLon !== 0) {
+                map.setCenter({ lat: lastLat, lng: lastLon });
+            }
+        }
+        drawingManager.setDrawingMode(google.maps.drawing.OverlayType.POLYGON);
+        this.style.display = 'none'; // Hide define button
+        document.getElementById('saveAreaBtn').style.display = 'inline-block';
+        document.getElementById('clearAreaBtn').style.display = 'inline-block';
+    });
+
+    document.getElementById('saveAreaBtn').addEventListener('click', function() {
+        if (selectedShape && selectedShape.type === google.maps.drawing.OverlayType.POLYGON) {
+            const vertices = selectedShape.getPath().getArray();
+            const points = vertices.map(vertex => ({ lat: vertex.lat(), lng: vertex.lng() }));
+            definedGeofencePoints = points; // Store for potential redraw
+            sendCommand('/command/set_geofence', { points: points });
+            logMessage('Geofence area saved and sent to drone.');
+            document.getElementById('geofenceStatus').textContent = 'Geofence: Defined. Ready to activate.';
+            document.getElementById('toggleGeofenceBtn').disabled = false;
+            document.getElementById('toggleGeofenceBtn').textContent = 'Activate Geofence';
+            geofenceActive = false; // Reset activation state until explicitly activated
+        } else {
+            alert('Please draw a polygon area first.');
+        }
+    });
+
+    document.getElementById('clearAreaBtn').addEventListener('click', function() {
+        if (selectedShape) {
+            selectedShape.setMap(null);
+            selectedShape = null;
+        }
+        definedGeofencePoints = [];
+        drawingManager.setDrawingMode(google.maps.drawing.OverlayType.POLYGON); // Allow drawing new one
+        document.getElementById('saveAreaBtn').style.display = 'none';
+        // document.getElementById('clearAreaBtn').style.display = 'none'; // Keep clear visible if they want to retry
+        document.getElementById('defineAreaBtn').style.display = 'inline-block';
+        document.getElementById('geofenceStatus').textContent = 'Geofence: Cleared. Define an area.';
+        document.getElementById('toggleGeofenceBtn').disabled = true;
+        document.getElementById('toggleGeofenceBtn').textContent = 'Activate Geofence';
+        if(geofenceActive) sendCommand('/command/toggle_geofence', { active: false }); // Deactivate if it was active
+        geofenceActive = false;
+
+    });
+
+    document.getElementById('toggleGeofenceBtn').addEventListener('click', function() {
+        if (definedGeofencePoints.length === 0) {
+            alert("Define and save a geofence area first!");
+            return;
+        }
+        geofenceActive = !geofenceActive;
+        sendCommand('/command/toggle_geofence', { active: geofenceActive });
+        this.textContent = geofenceActive ? 'Deactivate Geofence' : 'Activate Geofence';
+        document.getElementById('geofenceStatus').textContent = `Geofence: ${geofenceActive ? 'ACTIVE' : 'INACTIVE'}`;
+        logMessage(`Geofence ${geofenceActive ? 'activated' : 'deactivated'}.`);
+    });
+    }
+    </script>
+    
     <script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAdNkmYJQrIfujrBkpCaLVW3rpyxrJIOtQ&libraries=drawing,geometry&callback=initMap"></script>
+    
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono&display=swap'); /* For monospace elements */
@@ -772,11 +890,7 @@
         let lastLon = null;
         const LOCATION_CHANGE_THRESHOLD = 0.005; 
         // Add these variables at the top of your script
-        let map;
-        let drawingManager;
-        let selectedShape; // This will hold the polygon
-        let geofenceActive = false;
-        let definedGeofencePoints = []; 
+
         
         const TOMORROW_IO_API_KEY = 'Frdhol5qD8hZIoQoVmClewjcAEFcLsSS'; 
 
@@ -927,113 +1041,7 @@
             if (code >= 8000 && code <= 8001) return "11d"; 
             return isDay ? "01d" : "01n"; 
         }
-        function initMap() {
-    // Try to get drone's last known location for centering, or use a default
-    let initialCenter = { lat: 20.5937, lng: 78.9629 }; // Default to India
-    if (lastLat && lastLon && lastLat !== 0 && lastLon !== 0) {
-        initialCenter = { lat: lastLat, lng: lastLon };
-    }
-
-    map = new google.maps.Map(document.getElementById('map'), {
-        center: initialCenter,
-        zoom: 10, // Zoom out initially
-        mapTypeId: 'satellite'
-    });
-
-    drawingManager = new google.maps.drawing.DrawingManager({
-        drawingMode: null, // No drawing mode active initially
-        drawingControl: true,
-        drawingControlOptions: {
-            position: google.maps.ControlPosition.TOP_CENTER,
-            drawingModes: [
-                google.maps.drawing.OverlayType.POLYGON
-            ]
-        },
-        polygonOptions: {
-            fillColor: '#4CAF50',
-            fillOpacity: 0.3,
-            strokeWeight: 2,
-            strokeColor: '#4CAF50',
-            clickable: true,
-            editable: true,
-            zIndex: 1
-        }
-    });
-
-    drawingManager.setMap(map);
-
-    google.maps.event.addListener(drawingManager, 'overlaycomplete', function(event) {
-        if (selectedShape) {
-            selectedShape.setMap(null); // Clear previous shape
-        }
-        selectedShape = event.overlay;
-        selectedShape.type = event.type;
-        drawingManager.setDrawingMode(null); // Exit drawing mode
-        document.getElementById('saveAreaBtn').style.display = 'inline-block';
-        document.getElementById('clearAreaBtn').style.display = 'inline-block';
-    });
-
-    // Button event listeners (define these inside DOMContentLoaded or after initMap)
-    document.getElementById('defineAreaBtn').addEventListener('click', function() {
-        document.getElementById('map').style.display = 'block';
-        if (map) {
-            map.setZoom(18); // Zoom in for defining area
-             if (lastLat && lastLon && lastLat !== 0 && lastLon !== 0) {
-                map.setCenter({ lat: lastLat, lng: lastLon });
-            }
-        }
-        drawingManager.setDrawingMode(google.maps.drawing.OverlayType.POLYGON);
-        this.style.display = 'none'; // Hide define button
-        document.getElementById('saveAreaBtn').style.display = 'inline-block';
-        document.getElementById('clearAreaBtn').style.display = 'inline-block';
-    });
-
-    document.getElementById('saveAreaBtn').addEventListener('click', function() {
-        if (selectedShape && selectedShape.type === google.maps.drawing.OverlayType.POLYGON) {
-            const vertices = selectedShape.getPath().getArray();
-            const points = vertices.map(vertex => ({ lat: vertex.lat(), lng: vertex.lng() }));
-            definedGeofencePoints = points; // Store for potential redraw
-            sendCommand('/command/set_geofence', { points: points });
-            logMessage('Geofence area saved and sent to drone.');
-            document.getElementById('geofenceStatus').textContent = 'Geofence: Defined. Ready to activate.';
-            document.getElementById('toggleGeofenceBtn').disabled = false;
-            document.getElementById('toggleGeofenceBtn').textContent = 'Activate Geofence';
-            geofenceActive = false; // Reset activation state until explicitly activated
-        } else {
-            alert('Please draw a polygon area first.');
-        }
-    });
-
-    document.getElementById('clearAreaBtn').addEventListener('click', function() {
-        if (selectedShape) {
-            selectedShape.setMap(null);
-            selectedShape = null;
-        }
-        definedGeofencePoints = [];
-        drawingManager.setDrawingMode(google.maps.drawing.OverlayType.POLYGON); // Allow drawing new one
-        document.getElementById('saveAreaBtn').style.display = 'none';
-        // document.getElementById('clearAreaBtn').style.display = 'none'; // Keep clear visible if they want to retry
-        document.getElementById('defineAreaBtn').style.display = 'inline-block';
-        document.getElementById('geofenceStatus').textContent = 'Geofence: Cleared. Define an area.';
-        document.getElementById('toggleGeofenceBtn').disabled = true;
-        document.getElementById('toggleGeofenceBtn').textContent = 'Activate Geofence';
-        if(geofenceActive) sendCommand('/command/toggle_geofence', { active: false }); // Deactivate if it was active
-        geofenceActive = false;
-
-    });
-
-    document.getElementById('toggleGeofenceBtn').addEventListener('click', function() {
-        if (definedGeofencePoints.length === 0) {
-            alert("Define and save a geofence area first!");
-            return;
-        }
-        geofenceActive = !geofenceActive;
-        sendCommand('/command/toggle_geofence', { active: geofenceActive });
-        this.textContent = geofenceActive ? 'Deactivate Geofence' : 'Activate Geofence';
-        document.getElementById('geofenceStatus').textContent = `Geofence: ${geofenceActive ? 'ACTIVE' : 'INACTIVE'}`;
-        logMessage(`Geofence ${geofenceActive ? 'activated' : 'deactivated'}.`);
-    });
-}
+        
 
 
         function getWeatherDescription_TomorrowIO(weatherCode) {
@@ -1517,6 +1525,12 @@
             document.getElementById('stopTrackingBtn').style.background = 'linear-gradient(135deg, #6c757d, #5a6268)';
             
             const downloadContainer = document.getElementById('downloadLinkContainer');
+                if (typeof google !== 'undefined' && google.maps) { // Check if Google Maps API is loaded
+                    initMap(); // Call your function
+                } else {
+                    console.error("Google Maps API not loaded by DOMContentLoaded. Map initialization failed.");
+                    // Optionally, try again after a short delay or inform the user.
+                }
             if (downloadContainer) downloadContainer.innerHTML = '';
 
             updateWeatherCardDisplay({ error: "Connect to Jetson and Drone..." }); // Initialize display state
